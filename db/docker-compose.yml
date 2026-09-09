@@ -1,0 +1,25 @@
+name: nts-to-spotify
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: spotify-account-postgres
+    environment:
+      POSTGRES_DB: spotify_account_data
+      POSTGRES_USER: spotify_user
+      POSTGRES_PASSWORD: spotify_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - spotify_account_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spotify_user -d spotify_account_data"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  spotify_account_data:
+    # Pre-existing volume created when this compose lived in ~/spotify-account-loader; keeps the data.
+    name: spotify-account-loader_spotify_account_data

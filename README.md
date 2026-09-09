@@ -53,6 +53,25 @@ nts_to_spotify/
 └── datasets/                     # Archive of collected data
 ```
 
+## Local Database
+
+Track and episode data lives in a Postgres container (`spotify-account-postgres`, `localhost:5433`, db `spotify_account_data`, user/password `spotify_user`/`spotify_password`). It is defined in `db/docker-compose.yml`; this repo owns it, `spotify-account-loader` no longer does.
+
+```bash
+# start (or restart after a reboot)
+docker compose -f db/docker-compose.yml up -d
+
+# psql
+docker exec -it spotify-account-postgres psql -U spotify_user -d spotify_account_data
+```
+
+Schema layout:
+
+- `public` — Spotify account-export tables (`db/init/01-schema.sql`)
+- `radio` — `enriched_tracks`, `tracks`, `nts_episodes`, `nts_shows` (`db/init/02-radio_schema.sql`)
+
+`db/init/` runs only when the data volume is created from scratch. `03-radio_data.sql` is a gitignored data seed; refresh it with `db/dump_radio.sh` before any `docker compose down -v`, otherwise rebuild from `scripts/load_nts_episodes.py` and `load_enriched_tracks.py`.
+
 ## Prerequisites
 
 - Python 3.x
