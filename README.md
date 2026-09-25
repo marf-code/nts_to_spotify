@@ -68,7 +68,7 @@ docker exec -it spotify-account-postgres psql -U spotify_user -d spotify_account
 Schema layout:
 
 - `public` — Spotify account-export tables (`db/init/01-schema.sql`)
-- `radio` — `enriched_tracks`, `tracks`, `nts_episodes`, `nts_shows` (`db/init/02-radio_schema.sql`)
+- `radio` — `enriched_tracks`, `nts_tracks`, `nts_episodes`, `nts_shows` (`db/init/02-radio_schema.sql`), plus tables the scripts create on first run: `spotify_tracks` (`scripts/locate_spotify_tracks.py`), `artist_genres` (`scripts/harvest_artist_genres.py`), and `nts_episode_genres` (created by hand; not in any init or migration file)
 
 `db/init/` runs only when the data volume is created from scratch. `03-radio_data.sql` is a gitignored data seed; refresh it with `db/dump_radio.sh` before any `docker compose down -v`, otherwise rebuild from `scripts/load_nts_episodes.py` and `load_enriched_tracks.py`.
 
