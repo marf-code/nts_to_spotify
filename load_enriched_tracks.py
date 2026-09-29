@@ -10,7 +10,7 @@ i.e. with a header like:
     Speech,Live,Loud (Db),Key,Time Signature,Spotify Track Id,Label,ISRC,Explicit
 
 Usage:
-    python load_enriched_tracks.py <input_csv> [--playlist-name NAME] [--show-host HOST] [--append]
+    python load_enriched_tracks.py <input_csv> [--playlist-name NAME] [--show-host HOST] [--append | --replace]
 
 Examples:
     python load_enriched_tracks.py sasha_crush.csv --show-host "Sasha Crush"
@@ -18,7 +18,7 @@ Examples:
 
 By default the playlist name is derived from the CSV filename. If rows for
 that playlist name already exist, the script refuses to load (to avoid
-accidental double-loads) unless --append is passed.
+accidental double-loads) unless --append is passed; --replace swaps them out.
 """
 
 import argparse
@@ -98,6 +98,11 @@ def main():
         action="store_true",
         help="Load even if rows for this playlist name already exist",
     )
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Delete existing rows for this playlist name before loading",
+    )
     args = parser.parse_args()
 
     playlist_name = args.playlist_name or os.path.splitext(
@@ -117,10 +122,15 @@ def main():
             (playlist_name,),
         )
         existing = cur.fetchone()[0]
-        if existing and not args.append:
+        if existing and args.replace:
+            cur.execute(
+                'DELETE FROM radio.enriched_tracks WHERE "Playlist Name" = %s',
+                (playlist_name,),
+            )
+        elif existing and not args.append:
             sys.exit(
                 f'Playlist "{playlist_name}" already has {existing} rows in '
-                f"radio.enriched_tracks. Re-run with --append to load anyway."
+                f"radio.enriched_tracks. Re-run with --append or --replace."
             )
 
         quoted_cols = ", ".join(f'"{c}"' for c in CSV_COLUMNS)

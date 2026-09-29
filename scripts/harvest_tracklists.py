@@ -159,7 +159,9 @@ def main():
                         "musicbrainz_track_id": t.get("musicbrainz_track_id") or "",
                     })
                     tracks_written += 1
-                done_fh.write(f"{show}/{alias}\n")
+                # empty tracklists are often posted after airing, so leave them pending for the next run
+                if results:
+                    done_fh.write(f"{show}/{alias}\n")
                 processed += 1
             out_fh.flush()
             done_fh.flush()

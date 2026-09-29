@@ -128,19 +128,21 @@ def fetch_playlist_tracks(access_token, playlist_id):
 
     tracks = []
     skipped = 0
-    url = f'https://api.spotify.com/v1/playlists/{playlist_id}/tracks'
-    params = {
-        'limit': 100,
-        'fields': 'next,items(added_at,is_local,track(id,type,name,duration_ms,'
-                  'explicit,popularity,external_ids(isrc),artists(id,name),'
-                  'album(id,name,release_date)))',
-    }
-    while url:
+    # Apps created after Spotify's 2026 API changes only get /items (entry key 'item');
+    # older apps may still need /tracks (entry key 'track').
+    track_fields = ('(id,type,name,duration_ms,explicit,popularity,external_ids(isrc),'
+                    'artists(id,name),album(id,name,release_date))')
+    for endpoint, key in (('items', 'item'), ('tracks', 'track')):
+        url = f'https://api.spotify.com/v1/playlists/{playlist_id}/{endpoint}'
+        params = {'limit': 100, 'fields': f'next,items(added_at,is_local,{key}{track_fields})'}
         resp = _request_with_retry('GET', url, headers=headers, params=params)
+        if resp.status_code not in (403, 404):
+            break
+    while url:
         resp.raise_for_status()
         data = resp.json()
         for item in data.get('items', []):
-            track = item.get('track')
+            track = item.get(key)
             if not track or item.get('is_local') or track.get('type') != 'track' \
                     or not track.get('id'):
                 skipped += 1
@@ -157,7 +159,9 @@ def fetch_playlist_tracks(access_token, playlist_id):
                 'added_at': (item.get('added_at') or '')[:10],
             })
         url = data.get('next')
-        params = None  # `next` already carries limit/fields/offset
+        if url:
+            # `next` already carries limit/fields/offset
+            resp = _request_with_retry('GET', url, headers=headers)
         print(f'  fetched {len(tracks)} tracks...', flush=True)
 
     if skipped:

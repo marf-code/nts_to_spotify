@@ -54,7 +54,6 @@ DB_CONFIG = {
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 SEARCH_URL = "https://api.spotify.com/v1/search"
 BATCH = 200
-MAX_RETRY_AFTER = 600
 PLACEHOLDER = re.compile(
     r"^\W*(unknown( track| artist)?|untitled|unreleased|unknown|various( artists)?|id|n/?a|tba|\?+)\W*$", re.I
 )
@@ -170,8 +169,10 @@ class Spotify:
                 attempt += 1
                 continue
             if resp.status_code == 429:
-                wait = min(int(resp.headers.get("Retry-After", "1")) + 1, MAX_RETRY_AFTER)
-                print(f"rate limited, pausing all workers {wait}s", file=sys.stderr)
+                # Retrying before Retry-After elapses can extend Spotify's ban, so honor it in full.
+                wait = int(resp.headers.get("Retry-After", "1")) + 1
+                resume = time.strftime("%Y-%m-%d %H:%M", time.localtime(time.time() + wait))
+                print(f"rate limited, Retry-After {wait}s, pausing all workers until {resume}", file=sys.stderr)
                 self.limiter.pause(wait)
                 continue
             if resp.status_code >= 500:

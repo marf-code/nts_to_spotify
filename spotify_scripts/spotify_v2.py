@@ -69,12 +69,25 @@ def _require_oauth_creds():
 
 def get_user_access_token():
     """Run the authorization code flow and return an access token."""
-    _require_oauth_creds()
+    return get_user_token()['access_token']
+
+
+def get_user_token(scope='playlist-modify-public playlist-modify-private',
+                   app_id=None, app_secret=None, app_redirect_uri=None):
+    """Run the authorization code flow and return Spotify's token response.
+
+    Defaults to this app's credentials; pass app_* to authorize a different Spotify app.
+    """
+    app_id = app_id or client_id
+    app_secret = app_secret or client_secret
+    app_redirect_uri = app_redirect_uri or redirect_uri
+    if not app_id or not app_secret:
+        _require_oauth_creds()
     auth_params = {
-        'client_id': client_id,
+        'client_id': app_id,
         'response_type': 'code',
-        'redirect_uri': redirect_uri,
-        'scope': 'playlist-modify-public playlist-modify-private',
+        'redirect_uri': app_redirect_uri,
+        'scope': scope,
     }
     auth_url = f'https://accounts.spotify.com/authorize?{urlencode(auth_params)}'
 
@@ -85,7 +98,7 @@ def get_user_access_token():
     auth_code = input('Paste the "code" query parameter from the redirect URL: ').strip()
 
     auth_header = base64.b64encode(
-        f'{client_id}:{client_secret}'.encode('ascii')
+        f'{app_id}:{app_secret}'.encode('ascii')
     ).decode('ascii')
     token_response = requests.post(
         'https://accounts.spotify.com/api/token',
@@ -93,11 +106,11 @@ def get_user_access_token():
         data={
             'grant_type': 'authorization_code',
             'code': auth_code,
-            'redirect_uri': redirect_uri,
+            'redirect_uri': app_redirect_uri,
         },
     )
     token_response.raise_for_status()
-    return token_response.json()['access_token']
+    return token_response.json()
 
 
 def _request_with_retry(method, url, **kwargs):
