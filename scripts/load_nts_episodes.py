@@ -6,11 +6,11 @@ Input is the output of harvest_episodes.py:
 
     show_alias,episode_alias,show_name,location,broadcast,genres,url
 
-url is the natural key; radio.nts_tracks joins on (show_alias, episode_alias). Re-running
-upserts rather than duplicating. The shows CSV produced by list_all_shows.py,
-when available, is loaded into radio.nts_shows (keyed on the show slug, which
-matches nts_episodes.show_alias) and its parsed host is denormalised onto each
-episode's show_artist.
+(show_alias, episode_alias) is the natural key and what radio.nts_tracks joins
+on; re-running upserts rather than duplicating. genres ("Techno; House") is
+stored as a text[]. The shows CSV produced by list_all_shows.py, when
+available, is loaded into radio.nts_shows (keyed on the show slug, which
+matches nts_episodes.show_alias).
 
 Usage:
     python scripts/load_nts_episodes.py [episodes_csv] [--shows CSV] [--truncate]
@@ -34,9 +34,9 @@ DB_CONFIG = {
 }
 
 CSV_COLUMNS = ["show_alias", "episode_alias", "show_name", "location", "broadcast", "genres", "url"]
-TABLE_COLUMNS = ["show_alias", "episode_alias", "episode_name", "location", "broadcast", "genres", "show_artist", "url"]
-SHOW_CSV_COLUMNS = ["name", "artist", "location", "all_locations", "episodes", "url"]
-SHOW_TABLE_COLUMNS = ["show_alias", "name", "artist", "location", "all_locations", "episodes", "url"]
+TABLE_COLUMNS = ["show_alias", "episode_alias", "episode_name", "location", "broadcast", "genres", "url"]
+SHOW_CSV_COLUMNS = ["name", "artist", "location", "all_locations", "url"]
+SHOW_TABLE_COLUMNS = ["show_alias", "name", "artist", "location", "all_locations", "url"]
 
 DDL = """
 CREATE TABLE IF NOT EXISTS radio.nts_episodes (
@@ -46,9 +46,9 @@ CREATE TABLE IF NOT EXISTS radio.nts_episodes (
     episode_name  text,
     location      text,
     broadcast     timestamptz,
-    genres        text,
-    show_artist   text,
-    url           text NOT NULL UNIQUE
+    genres        text[],
+    url           text NOT NULL UNIQUE,
+    UNIQUE (show_alias, episode_alias)
 );
 CREATE INDEX IF NOT EXISTS nts_episodes_show_alias_idx ON radio.nts_episodes (show_alias);
 CREATE INDEX IF NOT EXISTS nts_episodes_location_idx   ON radio.nts_episodes (location);
@@ -59,7 +59,6 @@ CREATE TABLE IF NOT EXISTS radio.nts_shows (
     artist        text,
     location      text,
     all_locations text,
-    episodes      integer,
     url           text NOT NULL UNIQUE
 );
 CREATE INDEX IF NOT EXISTS nts_shows_location_idx ON radio.nts_shows (location);
@@ -78,27 +77,27 @@ def read_shows(path):
             url = row["url"].strip()
             values = [unquote(url.rsplit("/", 1)[-1])]
             for c in SHOW_CSV_COLUMNS[:-1]:
-                v = (row.get(c) or "").strip()
-                values.append(int(v) if c == "episodes" and v else (v or None))
+                values.append((row.get(c) or "").strip() or None)
             values.append(url)
             rows.append(values)
         return rows
 
 
-def read_episodes(path, artists):
+def read_episodes(path):
     with open(path, newline="", encoding="utf-8-sig") as fh:
         reader = csv.DictReader(fh)
         missing = [c for c in CSV_COLUMNS if c not in (reader.fieldnames or [])]
         if missing:
             sys.exit(f"CSV is missing columns: {', '.join(missing)}")
 
-        rows = []
+        rows = {}
         for row in reader:
             values = [(row.get(c) or "").strip() or None for c in CSV_COLUMNS[:-1]]
-            values.append(artists.get(row["show_alias"]))
+            genres = [g.strip() for g in (values[5] or "").split(";") if g.strip()]
+            values[5] = genres or None
             values.append(row["url"].strip())
-            rows.append(values)
-        return rows
+            rows[(values[0], values[1])] = values
+        return list(rows.values())
 
 
 def main():
@@ -110,8 +109,7 @@ def main():
     args = parser.parse_args()
 
     shows = read_shows(args.shows)
-    artists = {r[0]: r[2] for r in shows}
-    rows = read_episodes(args.episodes_csv, artists)
+    rows = read_episodes(args.episodes_csv)
     if not rows:
         sys.exit("CSV has no data rows, nothing to load.")
 
@@ -135,11 +133,13 @@ def main():
             )
 
         cols = ", ".join(TABLE_COLUMNS)
-        updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in TABLE_COLUMNS if c != "url")
+        updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in TABLE_COLUMNS
+                            if c not in ("show_alias", "episode_alias"))
+        # The same episode can arrive under a percent-encoded or a raw URL, so key on the aliases.
         execute_values(
             cur,
             f"INSERT INTO radio.nts_episodes ({cols}) VALUES %s "
-            f"ON CONFLICT (url) DO UPDATE SET {updates}",
+            f"ON CONFLICT (show_alias, episode_alias) DO UPDATE SET {updates}",
             rows,
             page_size=1000,
         )

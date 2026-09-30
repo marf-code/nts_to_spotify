@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """
-Fetch audio features (valence, energy, danceability, ...) for every Spotify
-track matched in radio.spotify_tracks and store them in
-radio.spotify_audio_features.
+Fetch audio features (valence, energy, danceability, ...) for every track in
+radio.track that has none yet, and store them on radio.track.
 
 Spotify's own audio-features endpoint is closed to new apps, so the numbers
 come from ReccoBeats, which serves the same schema keyed by Spotify track ID.
-Tracks ReccoBeats doesn't know are stored with found = false so they are not
-retried. The table is the progress record, so a stopped run resumes, and
-re-running picks up tracks matched since the last run. Join back with:
-
-    SELECT s.*, f.valence, f.energy, f.tempo
-    FROM radio.spotify_tracks s
-    JOIN radio.spotify_audio_features f USING (spotify_track_id)
+Every track asked about gets features_fetched_at, so tracks ReccoBeats doesn't
+know are not retried, a stopped run resumes, and re-running picks up tracks
+added since the last run.
 
 Usage:
     python scripts/fetch_audio_features.py [--limit N]
@@ -40,50 +35,26 @@ CHUNK = RECCOBEATS_BATCH * 10
 FEATURES = ["acousticness", "danceability", "energy", "instrumentalness", "key", "liveness",
             "loudness", "mode", "speechiness", "tempo", "valence"]
 
-DDL = """
-CREATE TABLE IF NOT EXISTS radio.spotify_audio_features (
-    spotify_track_id  text PRIMARY KEY,
-    found             boolean NOT NULL,
-    reccobeats_id     text,
-    isrc              text,
-    acousticness      numeric,
-    danceability      numeric,
-    energy            numeric,
-    instrumentalness  numeric,
-    key               integer,
-    liveness          numeric,
-    loudness          numeric,
-    mode              integer,
-    speechiness       numeric,
-    tempo             numeric,
-    valence           numeric,
-    fetched_at        timestamptz NOT NULL DEFAULT now()
-);
+UPDATE = f"""
+UPDATE radio.track t SET
+    reccobeats_id = COALESCE(v.reccobeats_id, t.reccobeats_id),
+    isrc = COALESCE(t.isrc, v.isrc),
+    {", ".join(f"{f} = COALESCE(v.{f}, t.{f})" for f in FEATURES)},
+    features_fetched_at = now(),
+    updated_at = now()
+FROM (VALUES %s) AS v (spotify_track_id, reccobeats_id, isrc, {", ".join(FEATURES)})
+WHERE t.spotify_track_id = v.spotify_track_id
 """
-
-UPSERT = f"""
-INSERT INTO radio.spotify_audio_features (
-    spotify_track_id, found, reccobeats_id, isrc, {", ".join(FEATURES)}
-) VALUES %s
-ON CONFLICT (spotify_track_id) DO UPDATE SET
-    found = EXCLUDED.found,
-    reccobeats_id = EXCLUDED.reccobeats_id,
-    isrc = EXCLUDED.isrc,
-    {", ".join(f"{f} = EXCLUDED.{f}" for f in FEATURES)},
-    fetched_at = now()
-"""
+# VALUES rows are untyped, so cast them to the radio.track column types.
+TEMPLATE = "(%s, %s, %s, " + ", ".join(
+    "%s::integer" if f in ("key", "mode") else "%s::numeric" for f in FEATURES) + ")"
 
 
 def pending_ids(cur, limit):
     cur.execute(
-        """
-        SELECT DISTINCT s.spotify_track_id
-        FROM radio.spotify_tracks s
-        WHERE s.found
-          AND NOT EXISTS (SELECT 1 FROM radio.spotify_audio_features f
-                          WHERE f.spotify_track_id = s.spotify_track_id)
-        ORDER BY s.spotify_track_id
-        """ + (" LIMIT %s" if limit else ""),
+        "SELECT spotify_track_id FROM radio.track "
+        "WHERE features_fetched_at IS NULL AND energy IS NULL ORDER BY spotify_track_id"
+        + (" LIMIT %s" if limit else ""),
         (limit,) if limit else None,
     )
     return [row[0] for row in cur.fetchall()]
@@ -91,8 +62,8 @@ def pending_ids(cur, limit):
 
 def row_for(track_id, feats):
     if feats is None:
-        return (track_id, False, None, None) + (None,) * len(FEATURES)
-    return (track_id, True, feats.get("id"), feats.get("isrc")) + tuple(feats.get(f) for f in FEATURES)
+        return (track_id, None, None) + (None,) * len(FEATURES)
+    return (track_id, feats.get("id"), feats.get("isrc")) + tuple(feats.get(f) for f in FEATURES)
 
 
 def main():
@@ -103,7 +74,6 @@ def main():
     conn = psycopg2.connect(**DB_CONFIG)
     conn.autocommit = True
     cur = conn.cursor()
-    cur.execute(DDL)
     ids = pending_ids(cur, args.limit)
     print(f"{len(ids)} tracks to fetch features for", file=sys.stderr)
 
@@ -111,7 +81,7 @@ def main():
     for start in range(0, len(ids), CHUNK):
         chunk = ids[start:start + CHUNK]
         features = fetch_audio_features(chunk)
-        execute_values(cur, UPSERT, [row_for(t, features.get(t)) for t in chunk])
+        execute_values(cur, UPDATE, [row_for(t, features.get(t)) for t in chunk], template=TEMPLATE)
         done += len(chunk)
         found += len(features)
         print(f"{done}/{len(ids)} tracks, {found} with features", file=sys.stderr)

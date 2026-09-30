@@ -19,23 +19,6 @@ CREATE TABLE IF NOT EXISTS user_data (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Streaming history table (music, podcasts, audiobooks)
-CREATE TABLE IF NOT EXISTS streaming_history (
-    id SERIAL PRIMARY KEY,
-    end_time TIMESTAMP NOT NULL,
-    artist_name VARCHAR(500),
-    track_name VARCHAR(500),
-    ms_played INTEGER NOT NULL,
-    content_type VARCHAR(50) DEFAULT 'music', -- music, podcast, audiobook
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create index for common queries
-CREATE INDEX IF NOT EXISTS idx_streaming_history_end_time ON streaming_history(end_time DESC);
-CREATE INDEX IF NOT EXISTS idx_streaming_history_artist ON streaming_history(artist_name);
-CREATE INDEX IF NOT EXISTS idx_streaming_history_track ON streaming_history(track_name);
-CREATE INDEX IF NOT EXISTS idx_streaming_history_content_type ON streaming_history(content_type);
-
 -- Playlists table
 CREATE TABLE IF NOT EXISTS playlists (
     id SERIAL PRIMARY KEY,
@@ -219,12 +202,14 @@ CREATE TABLE IF NOT EXISTS extended_streaming_history (
     offline_timestamp BIGINT,
     incognito_mode BOOLEAN,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    spotify_track_id TEXT GENERATED ALWAYS AS (substring(spotify_track_uri FROM '^spotify:track:(.+)$')) STORED,
     UNIQUE(ts, username, spotify_track_uri, ms_played)
 );
 
 -- Indexes for extended streaming history
 CREATE INDEX IF NOT EXISTS idx_extended_streaming_history_ts ON extended_streaming_history(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_extended_streaming_history_track_uri ON extended_streaming_history(spotify_track_uri);
+CREATE INDEX IF NOT EXISTS idx_extended_streaming_history_track_id ON extended_streaming_history(spotify_track_id);
 CREATE INDEX IF NOT EXISTS idx_extended_streaming_history_track_name ON extended_streaming_history(master_metadata_track_name);
 CREATE INDEX IF NOT EXISTS idx_extended_streaming_history_artist_name ON extended_streaming_history(master_metadata_album_artist_name);
 CREATE INDEX IF NOT EXISTS idx_extended_streaming_history_username ON extended_streaming_history(username);

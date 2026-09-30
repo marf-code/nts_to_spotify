@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Refresh radio.enriched_tracks from every playlist on your Spotify account.
+Refresh radio.playlist_track and radio.track from every playlist on your Spotify account.
 
 Each playlist is exported with spotify_scripts/playlist_to_enriched_csv.py and
-loaded with load_enriched_tracks.py --replace, so its rows always match the
+loaded with load_enriched_tracks.py --replace, so its tracks always match the
 playlist as it is now. Only playlists you own are synced unless
 --include-followed is passed.
 
@@ -18,8 +18,8 @@ The first run asks you to log in and saves SPOTIFY_SYNC_REFRESH_TOKEN to .env;
 later runs refresh from it and need no browser.
 
 Apps created after Spotify's 2026 API changes get no genres, labels or
-popularity, so those columns arrive blank; the run ends with
-merge_chosic_fields.py, which fills them for tracks seen in a Chosic export.
+popularity, so those columns arrive blank; radio.track keeps any values an
+earlier Chosic export stored (see merge_chosic_fields.py).
 
 Usage:
     python scripts/sync_my_playlists.py [--include-followed] [--only NAME ...] [--dry-run]
@@ -132,13 +132,12 @@ def main():
         if args.no_preview_fallback:
             export.append("--no-preview-fallback")
         load = [sys.executable, os.path.join(ROOT, "load_enriched_tracks.py"), csv_path,
-                "--playlist-name", p["name"], "--replace"]
+                "--playlist-name", p["name"], "--spotify-playlist-id", p["id"], "--replace"]
         # Passed via env rather than argv so the token doesn't show up in ps.
         env = {**os.environ, "SPOTIFY_ACCESS_TOKEN": token.get()}
         if subprocess.run(export, env=env).returncode or subprocess.run(load).returncode:
             failed.append(p["name"])
 
-    subprocess.run([sys.executable, os.path.join(HERE, "merge_chosic_fields.py")])
     print(f"\nsynced {len(playlists) - len(failed)}/{len(playlists)} playlists")
     if failed:
         print("failed: " + ", ".join(failed))

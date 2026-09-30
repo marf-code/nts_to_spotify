@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Look up every distinct (track, artist) in radio.nts_tracks on Spotify and store
-the result in radio.spotify_tracks.
+Look up every distinct (track, artist) in radio.nts_tracks on Spotify, store the
+match in radio.nts_track_match and the matched track's details in radio.track.
 
 Tracks that came with an ISRC are matched exactly via Spotify's isrc: search;
 the rest go through the same fielded-then-loose search and similarity scoring
@@ -12,10 +12,11 @@ stored as not found so it is not retried.
 Pairs that appear in the most episode tracklists go first; the table is the progress record, so
 a stopped run resumes. Join back with:
 
-    SELECT t.*, s.spotify_track_id
+    SELECT t.*, m.spotify_track_id
     FROM radio.nts_tracks t
-    JOIN radio.spotify_tracks s
-      ON s.track_key = lower(trim(t.track)) || E'\\t' || lower(trim(t.artist))
+    JOIN radio.nts_track_match m USING (track_key)
+
+or use the radio.nts_tracks_wide view.
 
 Requires SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET in .env or the environment.
 
@@ -58,42 +59,25 @@ PLACEHOLDER = re.compile(
     r"^\W*(unknown( track| artist)?|untitled|unreleased|unknown|various( artists)?|id|n/?a|tba|\?+)\W*$", re.I
 )
 
-DDL = """
-CREATE TABLE IF NOT EXISTS radio.spotify_tracks (
-    track_key           text PRIMARY KEY,
-    track               text NOT NULL,
-    artist              text NOT NULL,
-    nts_isrc            text,
-    spotify_track_id    text,
-    spotify_track_name  text,
-    spotify_artists     text,
-    spotify_album       text,
-    spotify_isrc        text,
-    spotify_popularity  integer,
-    spotify_duration_ms integer,
-    match_method        text NOT NULL,
-    match_score         numeric,
-    found               boolean NOT NULL,
-    fetched_at          timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS spotify_tracks_track_id_idx ON radio.spotify_tracks (spotify_track_id);
+UPSERT_TRACKS = """
+INSERT INTO radio.track (spotify_track_id, name, artists, album, isrc, popularity, duration_ms)
+VALUES %s
+ON CONFLICT (spotify_track_id) DO UPDATE SET
+    name = COALESCE(radio.track.name, EXCLUDED.name),
+    artists = COALESCE(radio.track.artists, EXCLUDED.artists),
+    album = COALESCE(radio.track.album, EXCLUDED.album),
+    isrc = COALESCE(radio.track.isrc, EXCLUDED.isrc),
+    popularity = COALESCE(radio.track.popularity, EXCLUDED.popularity),
+    duration_ms = COALESCE(radio.track.duration_ms, EXCLUDED.duration_ms)
 """
 
-UPSERT = """
-INSERT INTO radio.spotify_tracks (
-    track_key, track, artist, nts_isrc, spotify_track_id, spotify_track_name, spotify_artists,
-    spotify_album, spotify_isrc, spotify_popularity, spotify_duration_ms, match_method,
-    match_score, found
+UPSERT_MATCHES = """
+INSERT INTO radio.nts_track_match (
+    track_key, track, artist, nts_isrc, spotify_track_id, match_method, match_score, found
 ) VALUES %s
 ON CONFLICT (track_key) DO UPDATE SET
     nts_isrc = EXCLUDED.nts_isrc,
     spotify_track_id = EXCLUDED.spotify_track_id,
-    spotify_track_name = EXCLUDED.spotify_track_name,
-    spotify_artists = EXCLUDED.spotify_artists,
-    spotify_album = EXCLUDED.spotify_album,
-    spotify_isrc = EXCLUDED.spotify_isrc,
-    spotify_popularity = EXCLUDED.spotify_popularity,
-    spotify_duration_ms = EXCLUDED.spotify_duration_ms,
     match_method = EXCLUDED.match_method,
     match_score = EXCLUDED.match_score,
     found = EXCLUDED.found,
@@ -187,17 +171,17 @@ def pending_pairs(cur, min_appearances, limit):
     cur.execute(
         """
         WITH p AS (
-            SELECT lower(trim(track)) || E'\\t' || lower(trim(artist)) AS key,
+            SELECT track_key AS key,
                    min(trim(track)) AS track, min(trim(artist)) AS artist,
                    mode() WITHIN GROUP (ORDER BY isrc) AS isrc,
                    count(*) AS appearances
             FROM radio.nts_tracks
             WHERE nullif(trim(track), '') IS NOT NULL AND nullif(trim(artist), '') IS NOT NULL
-            GROUP BY lower(trim(track)), lower(trim(artist))
+            GROUP BY track_key
         )
         SELECT key, track, artist, isrc, appearances FROM p
         WHERE appearances >= %s
-          AND NOT EXISTS (SELECT 1 FROM radio.spotify_tracks s WHERE s.track_key = p.key)
+          AND NOT EXISTS (SELECT 1 FROM radio.nts_track_match m WHERE m.track_key = p.key)
         ORDER BY appearances DESC, key
         """ + (" LIMIT %s" if limit else ""),
         (min_appearances, limit) if limit else (min_appearances,),
@@ -232,16 +216,16 @@ def locate(spotify, track, artist, isrc):
     return best, "search", best_score
 
 
-def row_for(key, track, artist, isrc, item, method, match_score):
+def rows_for(key, track, artist, isrc, item, method, match_score):
+    """(radio.track row or None, radio.nts_track_match row) for one lookup."""
     if item is None:
-        return (key, track, artist, isrc, None, None, None, None, None, None, None,
-                method, match_score, False)
-    return (
-        key, track, artist, isrc, item["id"], item.get("name"),
-        ", ".join(a.get("name", "") for a in item.get("artists", [])),
+        return None, (key, track, artist, isrc, None, method, match_score, False)
+    track_row = (
+        item["id"], item.get("name"), ", ".join(a.get("name", "") for a in item.get("artists", [])),
         item.get("album", {}).get("name"), item.get("external_ids", {}).get("isrc"),
-        item.get("popularity"), item.get("duration_ms"), method, match_score, True,
+        item.get("popularity"), item.get("duration_ms"),
     )
+    return track_row, (key, track, artist, isrc, item["id"], method, match_score, True)
 
 
 def main():
@@ -260,7 +244,6 @@ def main():
     conn = psycopg2.connect(**DB_CONFIG)
     conn.autocommit = True
     cur = conn.cursor()
-    cur.execute(DDL)
     pairs = pending_pairs(cur, args.min_appearances, args.limit)
     print(f"{len(pairs)} track/artist pairs to look up", file=sys.stderr)
     if not pairs:
@@ -275,27 +258,32 @@ def main():
     def job(pair):
         key, track, artist, isrc = pair
         item, method, match_score = locate(spotify, track, artist, isrc)
-        return row_for(key, track, artist, isrc, item, method, match_score)
+        return rows_for(key, track, artist, isrc, item, method, match_score)
 
     done = found = failed = 0
     started = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for start in range(0, len(pairs), BATCH):
-            rows = []
+            tracks, matches = {}, []
             try:
                 for fut in as_completed([pool.submit(job, p) for p in pairs[start:start + BATCH]]):
                     try:
-                        row = fut.result()
+                        track_row, match_row = fut.result()
                     except Exception as exc:
                         failed += 1
                         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
                         continue
-                    rows.append(row)
+                    if track_row:
+                        tracks[track_row[0]] = track_row
+                    matches.append(match_row)
                     done += 1
-                    found += row[-1]
+                    found += match_row[-1]
             finally:
-                if rows:
-                    execute_values(cur, UPSERT, rows)
+                # radio.track first: nts_track_match references it.
+                if tracks:
+                    execute_values(cur, UPSERT_TRACKS, list(tracks.values()))
+                if matches:
+                    execute_values(cur, UPSERT_MATCHES, matches)
             rate = done / max(time.time() - started, 1)
             print(f"{done}/{len(pairs)} pairs, {found} found, {failed} failed, {rate:.1f}/s", file=sys.stderr)
     print(f"finished: {done} pairs, {found} found on Spotify, {failed} failed", file=sys.stderr)

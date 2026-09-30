@@ -4,6 +4,8 @@ Load the tracklist CSV written by harvest_tracklists.py into radio.nts_tracks.
 
 Rows are keyed on (show_alias, episode_alias, position) so re-running upserts
 onto existing rows; pass --truncate to replace the table contents instead.
+Every episode must already be in radio.nts_episodes (load_nts_episodes.py).
+track_key is the lookup key into radio.nts_track_match.
 
 Usage:
     python scripts/load_nts_tracks.py [tracks.csv] [--truncate]
@@ -41,9 +43,12 @@ CREATE TABLE IF NOT EXISTS radio.nts_tracks (
     duration_seconds     integer,
     isrc                 text,
     musicbrainz_track_id text,
-    UNIQUE (show_alias, episode_alias, position)
+    track_key            text GENERATED ALWAYS AS (lower(trim(track)) || E'\t' || lower(trim(artist))) STORED,
+    UNIQUE (show_alias, episode_alias, position),
+    FOREIGN KEY (show_alias, episode_alias) REFERENCES radio.nts_episodes (show_alias, episode_alias)
 );
 CREATE INDEX IF NOT EXISTS nts_tracks_show_alias_idx ON radio.nts_tracks (show_alias);
+CREATE INDEX IF NOT EXISTS nts_tracks_track_key_idx  ON radio.nts_tracks (track_key);
 CREATE INDEX IF NOT EXISTS nts_tracks_artist_idx     ON radio.nts_tracks (artist);
 CREATE INDEX IF NOT EXISTS nts_tracks_track_idx      ON radio.nts_tracks (track);
 """

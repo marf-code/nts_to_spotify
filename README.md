@@ -67,8 +67,13 @@ docker exec -it spotify-account-postgres psql -U spotify_user -d spotify_account
 
 Schema layout:
 
-- `public` — Spotify account-export tables (`db/init/01-schema.sql`)
-- `radio` — `enriched_tracks`, `nts_tracks`, `nts_episodes`, `nts_shows` (`db/init/02-radio_schema.sql`), plus tables the scripts create on first run: `spotify_tracks` (`scripts/locate_spotify_tracks.py`), `artist_genres` (`scripts/harvest_artist_genres.py`), and `nts_episode_genres` (created by hand; not in any init or migration file)
+- `public` — Spotify account-export tables (`db/init/01-schema.sql`); `extended_streaming_history.spotify_track_id` joins plays to `radio.track`
+- `radio` (`db/init/02-radio_schema.sql`, last reshaped by `db/migrations/2026-09-30_track_model.sql`):
+  - `track` — one row per Spotify track: metadata, Chosic fields (popularity, genres, label) and audio features
+  - `playlist`, `playlist_track` — playlist membership (`load_enriched_tracks.py`, `scripts/sync_my_playlists.py`)
+  - `nts_shows` → `nts_episodes` → `nts_tracks` — NTS catalog; `nts_tracks.track_key` looks up `nts_track_match` (`scripts/locate_spotify_tracks.py`), which points at `track`
+  - `artist_genres` — Last.fm genres per artist (`scripts/harvest_artist_genres.py`)
+  - `playlist_tracks_wide`, `nts_tracks_wide` — views with everything joined, plus Camelot
 
 `db/init/` runs only when the data volume is created from scratch. `03-radio_data.sql` is a gitignored data seed; refresh it with `db/dump_radio.sh` before any `docker compose down -v`, otherwise rebuild from `scripts/load_nts_episodes.py` and `load_enriched_tracks.py`.
 

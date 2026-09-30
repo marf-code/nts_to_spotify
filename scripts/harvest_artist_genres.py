@@ -73,7 +73,7 @@ class RateLimiter:
 
 
 def load_vocab(cur):
-    cur.execute("SELECT DISTINCT lower(genre) FROM radio.nts_episode_genres")
+    cur.execute("SELECT DISTINCT lower(g) FROM radio.nts_episodes, unnest(genres) AS g")
     return {r[0] for r in cur.fetchall()}
 
 

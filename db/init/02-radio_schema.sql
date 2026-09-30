@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict x75YR07Ntp0k1G0d2oaUS0p2z4UDODK0wEsePMgd8UVSasth7BQKdobLucDWfjT
+\restrict Or3fyvBpmZC2ephfRWGHvexudpFu4LPbzS3U8F9G2bOCIxYO6pkJxvgpjWdQwa4
 
 -- Dumped from database version 16.11
 -- Dumped by pg_dump version 16.11
@@ -25,58 +25,35 @@ SET row_security = off;
 CREATE SCHEMA radio;
 
 
+--
+-- Name: camelot(integer, integer); Type: FUNCTION; Schema: radio; Owner: -
+--
+
+CREATE FUNCTION radio.camelot(key integer, mode integer) RETURNS text
+    LANGUAGE sql IMMUTABLE
+    AS $$
+    SELECT CASE WHEN key IS NULL OR mode IS NULL THEN NULL
+                WHEN mode = 1 THEN ((7 * key + 7) % 12 + 1) || 'B'
+                ELSE ((7 * key + 4) % 12 + 1) || 'A' END
+$$;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
 
 --
--- Name: enriched_tracks; Type: TABLE; Schema: radio; Owner: -
+-- Name: artist_genres; Type: TABLE; Schema: radio; Owner: -
 --
 
-CREATE TABLE radio.enriched_tracks (
-    id integer NOT NULL,
-    "#" integer,
-    "Song" text,
-    "Artist" text,
-    "BPM" numeric,
-    "Camelot" text,
-    "Energy" integer,
-    "Added At" text,
-    "Duration" text,
-    "Popularity" integer,
-    "Genres" text,
-    "Parent Genres" text,
-    "Album" text,
-    "Album Date" text,
-    "Dance" integer,
-    "Acoustic" integer,
-    "Instrumental" integer,
-    "Valence" integer,
-    "Speech" integer,
-    "Live" integer,
-    "Loud (Db)" numeric,
-    "Key" text,
-    "Time Signature" integer,
-    "Spotify Track Id" text,
-    "Label" text,
-    "ISRC" text,
-    "Explicit" text,
-    "Playlist Name" text,
-    show_host text
-);
-
-
---
--- Name: enriched_tracks_id_seq; Type: SEQUENCE; Schema: radio; Owner: -
---
-
-ALTER TABLE radio.enriched_tracks ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME radio.enriched_tracks_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
+CREATE TABLE radio.artist_genres (
+    artist_key text NOT NULL,
+    artist text NOT NULL,
+    lastfm_name text,
+    lastfm_tags jsonb,
+    genres text[],
+    found boolean NOT NULL,
+    fetched_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -91,8 +68,7 @@ CREATE TABLE radio.nts_episodes (
     episode_name text,
     location text,
     broadcast timestamp with time zone,
-    genres text,
-    show_artist text,
+    genres text[],
     url text NOT NULL
 );
 
@@ -127,8 +103,24 @@ CREATE TABLE radio.nts_shows (
     artist text,
     location text,
     all_locations text,
-    episodes integer,
     url text NOT NULL
+);
+
+
+--
+-- Name: nts_track_match; Type: TABLE; Schema: radio; Owner: -
+--
+
+CREATE TABLE radio.nts_track_match (
+    track_key text NOT NULL,
+    track text NOT NULL,
+    artist text NOT NULL,
+    nts_isrc text,
+    spotify_track_id text,
+    match_method text NOT NULL,
+    match_score numeric,
+    found boolean NOT NULL,
+    fetched_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -146,7 +138,8 @@ CREATE TABLE radio.nts_tracks (
     offset_seconds integer,
     duration_seconds integer,
     isrc text,
-    musicbrainz_track_id text
+    musicbrainz_track_id text,
+    track_key text GENERATED ALWAYS AS (((lower(TRIM(BOTH FROM track)) || '	'::text) || lower(TRIM(BOTH FROM artist)))) STORED
 );
 
 
@@ -171,6 +164,182 @@ ALTER SEQUENCE radio.nts_tracks_id_seq OWNED BY radio.nts_tracks.id;
 
 
 --
+-- Name: track; Type: TABLE; Schema: radio; Owner: -
+--
+
+CREATE TABLE radio.track (
+    spotify_track_id text NOT NULL,
+    name text,
+    artists text,
+    album text,
+    album_release_date text,
+    isrc text,
+    duration_ms integer,
+    explicit boolean,
+    popularity integer,
+    label text,
+    genres text[],
+    parent_genres text[],
+    tempo numeric,
+    key integer,
+    mode integer,
+    time_signature integer,
+    energy numeric,
+    danceability numeric,
+    valence numeric,
+    acousticness numeric,
+    instrumentalness numeric,
+    speechiness numeric,
+    liveness numeric,
+    loudness numeric,
+    reccobeats_id text,
+    features_fetched_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: nts_tracks_wide; Type: VIEW; Schema: radio; Owner: -
+--
+
+CREATE VIEW radio.nts_tracks_wide AS
+ SELECT nt.show_alias,
+    nt.episode_alias,
+    nt."position",
+    nt.track,
+    nt.artist,
+    nt.offset_seconds,
+    nt.duration_seconds,
+    nt.isrc AS nts_isrc,
+    nt.musicbrainz_track_id,
+    nt.track_key,
+    s.name AS show_name,
+    s.artist AS show_host,
+    e.episode_name,
+    e.broadcast,
+    e.location AS episode_location,
+    e.genres AS episode_genres,
+    m.match_method,
+    m.match_score,
+    t.spotify_track_id,
+    t.name,
+    t.artists,
+    t.album,
+    t.album_release_date,
+    t.isrc,
+    t.duration_ms,
+    t.explicit,
+    t.popularity,
+    t.label,
+    t.genres,
+    t.parent_genres,
+    t.tempo,
+    t.key,
+    t.mode,
+    t.time_signature,
+    t.energy,
+    t.danceability,
+    t.valence,
+    t.acousticness,
+    t.instrumentalness,
+    t.speechiness,
+    t.liveness,
+    t.loudness,
+    t.reccobeats_id,
+    t.features_fetched_at,
+    t.updated_at,
+    radio.camelot(t.key, t.mode) AS camelot
+   FROM ((((radio.nts_tracks nt
+     JOIN radio.nts_episodes e USING (show_alias, episode_alias))
+     LEFT JOIN radio.nts_shows s USING (show_alias))
+     LEFT JOIN radio.nts_track_match m ON (((m.track_key = nt.track_key) AND m.found)))
+     LEFT JOIN radio.track t ON ((t.spotify_track_id = m.spotify_track_id)));
+
+
+--
+-- Name: playlist; Type: TABLE; Schema: radio; Owner: -
+--
+
+CREATE TABLE radio.playlist (
+    playlist_id integer NOT NULL,
+    name text NOT NULL,
+    spotify_playlist_id text,
+    show_host text,
+    loaded_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: playlist_playlist_id_seq; Type: SEQUENCE; Schema: radio; Owner: -
+--
+
+ALTER TABLE radio.playlist ALTER COLUMN playlist_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME radio.playlist_playlist_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: playlist_track; Type: TABLE; Schema: radio; Owner: -
+--
+
+CREATE TABLE radio.playlist_track (
+    playlist_id integer NOT NULL,
+    "position" integer NOT NULL,
+    spotify_track_id text NOT NULL,
+    added_at date
+);
+
+
+--
+-- Name: playlist_tracks_wide; Type: VIEW; Schema: radio; Owner: -
+--
+
+CREATE VIEW radio.playlist_tracks_wide AS
+ SELECT p.playlist_id,
+    p.name AS playlist_name,
+    p.spotify_playlist_id,
+    p.show_host,
+    pt."position",
+    pt.added_at,
+    t.spotify_track_id,
+    t.name,
+    t.artists,
+    t.album,
+    t.album_release_date,
+    t.isrc,
+    t.duration_ms,
+    t.explicit,
+    t.popularity,
+    t.label,
+    t.genres,
+    t.parent_genres,
+    t.tempo,
+    t.key,
+    t.mode,
+    t.time_signature,
+    t.energy,
+    t.danceability,
+    t.valence,
+    t.acousticness,
+    t.instrumentalness,
+    t.speechiness,
+    t.liveness,
+    t.loudness,
+    t.reccobeats_id,
+    t.features_fetched_at,
+    t.updated_at,
+    radio.camelot(t.key, t.mode) AS camelot
+   FROM ((radio.playlist_track pt
+     JOIN radio.playlist p USING (playlist_id))
+     JOIN radio.track t USING (spotify_track_id));
+
+
+--
 -- Name: nts_episodes id; Type: DEFAULT; Schema: radio; Owner: -
 --
 
@@ -185,11 +354,11 @@ ALTER TABLE ONLY radio.nts_tracks ALTER COLUMN id SET DEFAULT nextval('radio.nts
 
 
 --
--- Name: enriched_tracks enriched_tracks_pkey1; Type: CONSTRAINT; Schema: radio; Owner: -
+-- Name: artist_genres artist_genres_pkey; Type: CONSTRAINT; Schema: radio; Owner: -
 --
 
-ALTER TABLE ONLY radio.enriched_tracks
-    ADD CONSTRAINT enriched_tracks_pkey1 PRIMARY KEY (id);
+ALTER TABLE ONLY radio.artist_genres
+    ADD CONSTRAINT artist_genres_pkey PRIMARY KEY (artist_key);
 
 
 --
@@ -198,6 +367,14 @@ ALTER TABLE ONLY radio.enriched_tracks
 
 ALTER TABLE ONLY radio.nts_episodes
     ADD CONSTRAINT nts_episodes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: nts_episodes nts_episodes_show_alias_episode_alias_key; Type: CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.nts_episodes
+    ADD CONSTRAINT nts_episodes_show_alias_episode_alias_key UNIQUE (show_alias, episode_alias);
 
 
 --
@@ -225,6 +402,14 @@ ALTER TABLE ONLY radio.nts_shows
 
 
 --
+-- Name: nts_track_match nts_track_match_pkey; Type: CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.nts_track_match
+    ADD CONSTRAINT nts_track_match_pkey PRIMARY KEY (track_key);
+
+
+--
 -- Name: nts_tracks nts_tracks_pkey; Type: CONSTRAINT; Schema: radio; Owner: -
 --
 
@@ -238,6 +423,46 @@ ALTER TABLE ONLY radio.nts_tracks
 
 ALTER TABLE ONLY radio.nts_tracks
     ADD CONSTRAINT nts_tracks_show_alias_episode_alias_position_key UNIQUE (show_alias, episode_alias, "position");
+
+
+--
+-- Name: playlist playlist_name_key; Type: CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.playlist
+    ADD CONSTRAINT playlist_name_key UNIQUE (name);
+
+
+--
+-- Name: playlist playlist_pkey; Type: CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.playlist
+    ADD CONSTRAINT playlist_pkey PRIMARY KEY (playlist_id);
+
+
+--
+-- Name: playlist playlist_spotify_playlist_id_key; Type: CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.playlist
+    ADD CONSTRAINT playlist_spotify_playlist_id_key UNIQUE (spotify_playlist_id);
+
+
+--
+-- Name: playlist_track playlist_track_pkey; Type: CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.playlist_track
+    ADD CONSTRAINT playlist_track_pkey PRIMARY KEY (playlist_id, "position");
+
+
+--
+-- Name: track track_pkey; Type: CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.track
+    ADD CONSTRAINT track_pkey PRIMARY KEY (spotify_track_id);
 
 
 --
@@ -269,6 +494,13 @@ CREATE INDEX nts_shows_location_idx ON radio.nts_shows USING btree (location);
 
 
 --
+-- Name: nts_track_match_track_id_idx; Type: INDEX; Schema: radio; Owner: -
+--
+
+CREATE INDEX nts_track_match_track_id_idx ON radio.nts_track_match USING btree (spotify_track_id);
+
+
+--
 -- Name: nts_tracks_artist_idx; Type: INDEX; Schema: radio; Owner: -
 --
 
@@ -290,8 +522,54 @@ CREATE INDEX nts_tracks_track_idx ON radio.nts_tracks USING btree (track);
 
 
 --
+-- Name: nts_tracks_track_key_idx; Type: INDEX; Schema: radio; Owner: -
+--
+
+CREATE INDEX nts_tracks_track_key_idx ON radio.nts_tracks USING btree (track_key);
+
+
+--
+-- Name: playlist_track_track_idx; Type: INDEX; Schema: radio; Owner: -
+--
+
+CREATE INDEX playlist_track_track_idx ON radio.playlist_track USING btree (spotify_track_id);
+
+
+--
+-- Name: nts_track_match nts_track_match_spotify_track_id_fkey; Type: FK CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.nts_track_match
+    ADD CONSTRAINT nts_track_match_spotify_track_id_fkey FOREIGN KEY (spotify_track_id) REFERENCES radio.track(spotify_track_id);
+
+
+--
+-- Name: nts_tracks nts_tracks_show_alias_episode_alias_fkey; Type: FK CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.nts_tracks
+    ADD CONSTRAINT nts_tracks_show_alias_episode_alias_fkey FOREIGN KEY (show_alias, episode_alias) REFERENCES radio.nts_episodes(show_alias, episode_alias);
+
+
+--
+-- Name: playlist_track playlist_track_playlist_id_fkey; Type: FK CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.playlist_track
+    ADD CONSTRAINT playlist_track_playlist_id_fkey FOREIGN KEY (playlist_id) REFERENCES radio.playlist(playlist_id) ON DELETE CASCADE;
+
+
+--
+-- Name: playlist_track playlist_track_spotify_track_id_fkey; Type: FK CONSTRAINT; Schema: radio; Owner: -
+--
+
+ALTER TABLE ONLY radio.playlist_track
+    ADD CONSTRAINT playlist_track_spotify_track_id_fkey FOREIGN KEY (spotify_track_id) REFERENCES radio.track(spotify_track_id);
+
+
+--
 -- PostgreSQL database dump complete
 --
 
-\unrestrict x75YR07Ntp0k1G0d2oaUS0p2z4UDODK0wEsePMgd8UVSasth7BQKdobLucDWfjT
+\unrestrict Or3fyvBpmZC2ephfRWGHvexudpFu4LPbzS3U8F9G2bOCIxYO6pkJxvgpjWdQwa4
 
